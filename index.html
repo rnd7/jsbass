@@ -1,0 +1,901 @@
+<!DOCTYPE html>
+<!-- saved from url=(0028)http://goldsource.de/jsbass/ -->
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=windows-1252">
+<style>
+html,body{
+  background:#111111;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  -khtml-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+  width:  100%;
+  height: 100%;
+  margin: 0px;
+  padding: 0px;
+  overflow:hidden;
+}
+#canvas{
+}
+canvas{
+  cursor:default;
+}
+#os_canvas{
+  display:none;
+}
+#video{
+  display:none;
+}
+button{
+ display:inline-block;
+}
+panel{
+ display:block;
+}
+</style>
+</head>
+<body>
+<canvas id="screen" width="1533" height="1278"></canvas>
+<script>
+(function(){   
+  const OSC_TYPE = [
+    "sine",
+    "square",
+    "sawtooth",
+    "triangle",
+  ]
+  const FILTER_TYPE = [
+    "lowpass",
+    "highpass",
+    "bandpass",
+    "lowshelf",
+    "highshelf",
+    "peaking",
+    "notch",
+    "allpass"    
+  ]
+
+  var cv;
+  var ctx;  
+  var actx;
+  var master;
+  
+  var channel = []
+  
+  var knob_size = 32;
+  var knob_start = -Math.PI*1.25;
+  var knob_range = Math.PI*1.5;
+  
+  var selected_component = null;
+  
+  /* MAIN *********************************************************************/
+  window.onload = function(){ 
+    cv = document.querySelector('#screen'); 
+    ctx = cv.getContext("2d");
+    if(!window.AudioContext){
+      if(!window.webkitAudioContext) throw("Your browser sucks");
+      else window.AudioContext = window.webkitAudioContext;
+    }
+    actx = new AudioContext();
+    master = actx.createGain();
+    master.connect(actx.destination);
+    channel.push(makeChannel(actx,master));
+    window.onresize = resize;
+    // Global Event Listeners
+    cv.onmousedown = function(e){
+      selected_component = componentUnderPosition(channel,e.offsetX, e.offsetY);
+      if(selected_component && selected_component.hasOwnProperty("down")){
+        selected_component.down(selected_component,e)
+      }  
+    }
+    cv.onclick = function(e){
+      var c = componentUnderPosition(channel,e.offsetX, e.offsetY)
+      if(c && c.hasOwnProperty("click")){
+        c.click(c,e)
+      } 
+    }
+    cv.onmousemove = function(e){
+      if(selected_component && selected_component.hasOwnProperty("move")){
+        selected_component.move(selected_component,e)
+      }  
+    }
+    cv.onmouseup = function(e){    
+      if(selected_component && selected_component.hasOwnProperty("up")){
+        selected_component.up(selected_component,e);
+      }
+      selected_component = null;
+    }
+    cv.onmouseleave = function(e){      
+      if(selected_component && selected_component.hasOwnProperty("leave")){
+        selected_component.leave(selected_component,e);
+      }
+      selected_component = null;
+    }
+    cv.onmousewheel = function(e){  
+      var c = componentUnderPosition(channel,e.offsetX, e.offsetY)   
+      if(c && c.hasOwnProperty("wheel")){      
+        c.wheel(c,e);
+      }
+    }
+    resize()
+    loop();
+  } 
+  var resize = function(e){    
+    ctx.canvas.width  = window.innerWidth;
+    ctx.canvas.height = window.innerHeight;
+    ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height);
+    draw(
+      ctx,
+      channel,
+      (ctx.canvas.width-300)/2,
+      (ctx.canvas.height-300)/2,
+      300,
+      300
+    );
+    
+  }
+  var loop = function(timestamp){
+    for(var i = 0; i<channel.length; i++) channel[i].update();
+    requestAnimationFrame(loop);
+  } 
+  
+  /* UI COMPONENTS ************************************************************/  
+  var draw = function(ctx,component,x,y,w,h){
+    var xo = x;
+    var yo = y;
+    var spacer = 6
+    var max_h = 0;
+    for(var i=0;i<component.length;i++){ 
+      var c = component[i];
+      if(!c.hasOwnProperty("layout")){
+        if(xo+c.width>x+w){
+          xo=x;
+          yo+=max_h;
+          max_h = 0;
+        }
+        c.x = xo;
+        c.y = yo;
+        xo += c.width+spacer;
+        max_h = Math.max(max_h,c.height);
+      }
+      ctx.clearRect(c.x,c.y,c.width,c.height);
+      if(c.hasOwnProperty("name")) drawLabel(ctx,c);
+      if(c.hasOwnProperty("draw")) c.draw(ctx,c); 
+      
+      if(c.hasOwnProperty("child"))
+        draw(ctx,c.child,c.x,c.y,c.width,c.height)
+    }
+  }  
+  var componentUnderPosition = function(component,x,y){
+    for(var i=0;i<component.length;i++){  
+      var c = component[i];
+      if(c.x<=x&&c.x+c.width>=x&&c.y<=y&&c.y+c.height>=y){
+        if(c.child.length) return componentUnderPosition(c.child,x,y)
+        else return c;
+      }
+    }
+    return null;
+  }  
+  var makeComponent = function(o){
+    var c = {};
+    c.x = 0;
+    c.y = 0;
+    c.width = 0;
+    c.height = 0;
+    c.child = [];
+    for(var k in o) c[k] = o[k];
+    return c;
+  }
+  /* CHANNEL ******************************************************************/
+  var makeChannel = function(actx,destination){
+    var c = makeComponent();
+    c.sequencer = makeSequencer(actx);
+    c.synthesizer = makeSynthesizer(actx,destination);
+    c.update = function(){
+      c.sequencer.update(c.synthesizer);
+    }   
+    c.width = 300;
+    c.height = 300;
+    c.child = [  
+      makeComponent(
+        {
+          synthesizer:c.synthesizer,
+          name:"OSC",
+          draw:drawSelect,
+          value:OSC_TYPE.indexOf(c.synthesizer.oscillator.type),
+          steps: 4,
+          move:selectMove,
+          down:selectMove ,
+          onchange:function(t){
+            t.synthesizer.oscillator.type=OSC_TYPE[t.value];
+          },
+          width:knob_size,
+          height:knob_size+24
+        }
+      ),
+      makeComponent(
+        {  
+          synthesizer:c.synthesizer,
+          name:"TUNE",
+          value:c.synthesizer.detune/100,
+          draw:drawPan,
+          move:panMove,
+          down:panMove,
+          onchange:function(t){t.synthesizer.detune=t.value*100},
+          width:knob_size,
+          height:knob_size+24
+        } 
+      ),
+      makeComponent(
+        {
+          synthesizer:c.synthesizer,
+          name:"ATME",
+          draw:drawKnob,
+          value:Math.sqrt(c.synthesizer.attack_time)/10,
+          move:knobMove,
+          down:knobMove,
+          onchange:function(t){t.synthesizer.attack_time=t.value*t.value*10},
+          x:0,
+          y:0,
+          width:knob_size,
+          height:knob_size+24
+        }
+      ),
+      makeComponent(
+        {
+          synthesizer:c.synthesizer,
+          name:"AVOL",
+          draw:drawKnob,
+          value:c.synthesizer.attack_volume,
+          move:knobMove,
+          down:knobMove,
+          onchange:function(t){t.synthesizer.attack_volume=t.value},
+          width:knob_size,
+          height:knob_size+24
+        }
+      ),
+      makeComponent(
+        {
+          synthesizer:c.synthesizer,
+          name:"DTME",
+          draw:drawKnob,
+          value:Math.sqrt(c.synthesizer.decay_time)/10,
+          move:knobMove,
+          down:knobMove,
+          onchange:function(t){t.synthesizer.decay_time=t.value*t.value*10},
+          width:knob_size,
+          height:knob_size+24
+        }
+      ),
+      makeComponent(
+        {
+          synthesizer:c.synthesizer,
+          name:"SVOL",
+          draw:drawKnob,
+          value:c.synthesizer.sustain_volume,
+          move:knobMove,
+          down:knobMove,
+          onchange:function(t){t.synthesizer.sustain_volume=t.value},
+          width:knob_size,
+          height:knob_size+24
+        }
+      ),
+      makeComponent(
+        {
+          synthesizer:c.synthesizer,
+          name:"RTME",
+          draw:drawKnob,
+          value:Math.sqrt(c.synthesizer.release_time)/10,
+          move:knobMove,
+          down:knobMove,
+          onchange:function(t){t.synthesizer.release_time=t.value*t.value*10},
+          width:knob_size,
+          height:knob_size+24
+        }
+      ),
+      makeComponent(
+        {
+          filter:c.synthesizer.filter,
+          name:"FILT",
+          draw:drawSelect,
+          value:FILTER_TYPE.indexOf(c.synthesizer.filter.type),
+          steps: 8,
+          move:selectMove,
+          down:selectMove,
+          onchange:function(t){
+            t.filter.type=FILTER_TYPE[t.value];
+          },
+          width:knob_size,
+          height:knob_size+24
+        }
+      ),
+      makeComponent(
+        {
+          filter:c.synthesizer.filter,
+          name:"FREQ",
+          draw:drawKnob,
+          value:Math.sqrt((c.synthesizer.filter.frequency.value-40)/2000),
+          move:knobMove,
+          down:knobMove,
+          onchange:function(t){t.filter.frequency.value=40+t.value*t.value*2000},
+          width:knob_size,
+          height:knob_size+24
+        } 
+      ),
+      makeComponent(
+        {
+          filter:c.synthesizer.filter,
+          name:"Q",
+          draw:drawKnob,
+          value:c.synthesizer.filter.Q.value,
+          move:knobMove,
+          down:knobMove,
+          onchange:function(t){t.filter.Q.value=t.value},
+          width:knob_size,
+          height:knob_size+24
+        }
+      ),
+      makeComponent(
+        {
+          filter:c.synthesizer.filter,
+          name:"POW",
+          draw:drawKnob,
+          value:c.synthesizer.filter.gain.value,
+          move:knobMove,
+          down:knobMove,
+          onchange:function(t){t.filter.gain.value=t.value},
+          width:knob_size,
+          height:knob_size+24
+        }
+      ),
+      makeComponent(
+        {
+          synthesizer:c.synthesizer,
+          name:"DLY",
+          draw:drawKnob,
+          value:Math.sqrt(c.synthesizer.delay.delayTime.value/5),
+          move:knobMove,
+          down:knobMove,
+          onchange:function(t){t.synthesizer.delay.delayTime.value = t.value*t.value*5},
+          width:knob_size,
+          height:knob_size+24
+        }
+      ),
+      makeComponent(
+        {
+          synthesizer:c.synthesizer,
+          name:"PAN",
+          value:c.synthesizer.getPan()/Math.PI,
+          draw:drawPan,
+          move:panMove,
+          down:panMove,
+          onchange:function(t){t.synthesizer.setPan(t.value*Math.PI)},
+          width:knob_size,
+          height:knob_size+24
+        }
+      ),
+      makeComponent(
+        {
+          synthesizer:c.synthesizer,
+          name:"GAIN",
+          draw:drawKnob,
+          value:c.synthesizer.getGain(),
+          move:knobMove,
+          down:knobMove,
+          onchange:function(t){t.synthesizer.setGain(t.value)},
+          width:knob_size,
+          height:knob_size+24
+        }
+      ),
+      makeComponent(
+        {
+          sequencer:c.sequencer,
+          name:"BPM",
+          draw:drawKnob,
+          value:(c.sequencer.getBPM()-1)/240,
+          move:knobMove,
+          down:knobMove,
+          onchange:function(t){t.sequencer.setBPM(1+t.value*239)},
+          width:knob_size,
+          height:knob_size+24
+        }
+      ),
+      makeComponent(
+        {
+          sequencer:c.sequencer,
+          name:"SEQUENCER",
+          draw:drawSequencer,
+          wheel:sequencerWheel,
+          down:sequencerDown,
+          move:sequencerMove,
+          onchange:function(t){},
+          width:300,
+          height:180,
+        }
+      )
+    ]
+    return c;
+  }
+  /* SEQUENCER ****************************************************************/
+  var makeSequencer = function(actx){
+    var s = {};
+    var step = [];
+    var beats = 4;
+    var ticks_per_beat = 4;
+    var ticks = beats*ticks_per_beat;
+    var base_freq = 80;
+    var note_range = 24;
+    var note_scale = 1.0594630943593;
+    var index = -1;
+    var lasttime = actx.currentTime;
+    var delta = 0;
+    var bpm = 120;
+    var timeunit = 60/bpm/4; // 1/16 notes 
+    var patime = 0;
+    var next = 0;
+    var current = 0;
+    var duration = 1;    
+    var makeStep = s.makeStep = function(){
+      var n = {};
+      n.on=true;
+      n.velocity=.7;
+      n.note = 0;
+      return n;
+    }    
+    var calculateFrequency = s.calculateFrequency = function(note){
+       return base_freq*Math.pow(note_scale,note)
+    }
+    step = [makeStep(),undefined,undefined,undefined,makeStep()]
+    s.getStep = function(){
+      return step;
+    }
+    s.getNoteRange = function(){
+      return note_range;
+    }
+    s.setNoteRange = function(val){
+      note_range = val;
+    }
+    s.getTicksPerBeat = function(){
+      return ticks_per_beat;
+    }
+    s.setTicksPerBeat = function(v){
+      ticks_per_beat = v;
+      ticks = beats*ticks_per_beat;
+    }
+    s.getBeats = function(){
+      return beats;
+    }
+    s.setBeats = function(v){
+      beats = v;
+      ticks = beats*ticks_per_beat;
+    }
+    var getBPM = s.getBPM = function(value){
+      return bpm;
+    }
+    var setBPM = s.setBPM = function(value){
+      bpm = value;
+      timeunit = 60/bpm/4;
+    }
+    var update = s.update = function(synth){
+      if(patime == 0) patime = actx.currentTime;
+      var atime = actx.currentTime;
+      var atime_delta = atime-patime;
+      var time_per_sequence = ticks*timeunit;
+      if(current >= next/2){ 
+        var offset = next - current;
+        for(var n = 0,len = step.length; n<len;n++){
+          if(step[n]==undefined)continue;
+          var note = step[n];
+          var t = offset+n*timeunit;
+          if(note.on===true) synth.on(
+            t,
+            calculateFrequency(note.note),
+            note.velocity,
+            duration*timeunit
+          );
+        }
+        current = 0;
+        next = offset+time_per_sequence;
+      }      
+      current += atime_delta;
+      patime = atime;
+    }
+    return s;
+  }  
+  /* SYNTHESIZER **************************************************************/ 
+  var makeSynth = makeSynthesizer = function(actx,destination){
+    var c = {};
+    // oscillator
+    c.frequency = 440.0;
+    c.frequency_slide = .01;
+    c.detune = 0;
+    c.detune_slide = .01;
+    // envelope
+    c.attack_time = .1;
+    c.attack_volume = .9;
+    c.decay_time = .1;
+    c.sustain_volume = .7;
+    c.release_time = .3;
+    // gain
+    c.gain_slide = .01;    
+    var oscillator = actx.createOscillator();
+    oscillator.frequency.value = c.frequency;
+    c.oscillator = oscillator;
+    var envelope = actx.createGain();
+    envelope.gain.value = 0;
+    var filter = actx.createBiquadFilter();  
+    // Set up the biquad filter node with a low-pass filter type
+    filter.type = filter.LOWPASS;
+    filter.frequency.value = 100;
+    filter.Q.value = .9;
+    filter.gain.value = 1;
+    c.filter = filter;
+    var delay = actx.createDelay();
+    c.delay = delay;
+    var pan = actx.createPanner();
+    var output = actx.createGain();
+    output.gain.value = .9;
+    var is_on = false;
+    oscillator.connect(envelope);
+    envelope.connect(filter);
+    filter.connect(delay);
+    delay.connect(pan);
+    pan.connect(output);
+    output.connect(destination);
+    oscillator.start(0);
+    var pan_value = 0;
+    c.getPan = function(t){
+      return pan_value;
+    }
+    c.setPan = function(t){
+      pan_value = t
+      var xDeg = t;
+      var zDeg = xDeg + Math.PI/2;
+      if (zDeg > Math.PI/2) zDeg = Math.PI - zDeg;
+      var x = Math.sin(xDeg);
+      var z = Math.sin(zDeg);
+      pan.setPosition(x, 0, z);
+    }
+    c.setPan(pan_value);
+    c.setGain = function(v){
+      var time = actx.currentTime;  
+      output.gain.cancelScheduledValues(time);
+      output.gain.setValueAtTime(output.gain.value, time); 
+      output.gain.linearRampToValueAtTime(v,time+c.gain_slide)
+    }
+    c.getGain = function(v){
+      return output.gain.value;
+    }
+    c.on = function(offset,f,v,d){
+      var time = actx.currentTime+(offset||0);  
+      f = f || c.frequency;
+      v = v || 1;
+      // detune
+      oscillator.detune.cancelScheduledValues(time);
+      oscillator.detune.setValueAtTime(oscillator.detune.value,time);
+      oscillator.detune.linearRampToValueAtTime(c.detune,time+c.detune_slide);      
+      // frequency
+      //oscillator.frequency.value = c.frequency;
+      oscillator.frequency.cancelScheduledValues(time);
+      oscillator.frequency.setValueAtTime(oscillator.frequency.value,time);
+      oscillator.frequency.linearRampToValueAtTime(f,time+c.frequency_slide);
+      // type
+      //oscillator.type = c.type;
+      // gain
+      envelope.gain.cancelScheduledValues(time);
+      envelope.gain.setValueAtTime(envelope.gain.value,time);
+      // attack
+      envelope.gain.linearRampToValueAtTime(
+        c.attack_volume*v,
+        time+c.attack_time
+      );      
+      // decay
+      envelope.gain.setValueAtTime(c.attack_volume*v,time+c.attack_time);
+      envelope.gain.linearRampToValueAtTime(
+        c.sustain_volume*v,
+        time+c.attack_time+c.decay_time
+      );      
+      // Release
+      envelope.gain.setValueAtTime(c.sustain_volume*v,time+c.attack_time+c.decay_time+d);
+      envelope.gain.linearRampToValueAtTime(
+        0 ,
+        time+c.attack_time+c.decay_time+d+c.release_time
+      );
+      
+    };    
+    c.off = function(offset){
+     /* if(!is_on) return;
+      is_on = false;*/
+      var time = actx.currentTime+(offset||0);        
+      // release
+      envelope.gain.cancelScheduledValues(time);
+      envelope.gain.setValueAtTime(envelope.gain.value,time);
+      envelope.gain.linearRampToValueAtTime(0 , time + c.release_time);    
+    };
+    return c;
+  }
+  var calcSequencerPosition = function(c,e){
+    var per_tick = c.width/(c.sequencer.getTicksPerBeat()*c.sequencer.getBeats())<<0;
+    var tick_error = (c.width%(c.sequencer.getTicksPerBeat()*c.sequencer.getBeats()))/2<<0
+    var per_note = c.height/c.sequencer.getNoteRange()<<0;
+    var note_error = (c.height%c.sequencer.getNoteRange())/2<<0;  
+    var per_beat = per_tick*c.sequencer.getTicksPerBeat();  
+    var x = (e.offsetX-tick_error)-c.x;
+    var y = (e.offsetY-note_error)-c.y;
+    var beat = Math.max(0,Math.min(c.sequencer.getBeats()-1,(x/per_beat)<<0));
+    var tick =
+      Math.max(0,Math.min(c.sequencer.getTicksPerBeat()-1,((x-beat*per_beat)/per_tick)<<0));
+    var index = beat*c.sequencer.getTicksPerBeat()+tick;
+    var h = c.height-note_error;
+    var note = Math.max(0,Math.min(c.sequencer.getNoteRange()-1,((h-y)/(h))*c.sequencer.getNoteRange()<<0));
+    return {note:note,index:index,tick:tick,beat:beat};      
+  }  
+  /* UI INTERACTION ***********************************************************/  
+  
+  var panMove = function(c,e){
+    var t = vecAngle([c.x+c.width/2,c.y+c.height/2],[e.offsetX,e.offsetY])
+    var d = ((Math.PI*2+knob_start)/knob_range);
+    t = (t-knob_start+Math.PI*2)%(Math.PI*2);  
+    var perc = t/(knob_range);
+    /* Smooth flip, could be removed by pure algebraic solution */
+    if(perc>=1&&perc<=(1+d/2)) c.value = 1;
+    else if(perc>(1+d/2)||perc<0) c.value = -1;
+    else c.value = perc*2-1;    
+    c.draw(ctx,c);
+    c.onchange(c);
+  } 
+  var knobMove = function(c,e){
+    var t = vecAngle([c.x+c.width/2,c.y+c.height/2],[e.offsetX,e.offsetY])
+    var d = ((Math.PI*2+knob_start)/knob_range);
+    t = (t-knob_start+Math.PI*2)%(Math.PI*2);  
+    var perc = t/(knob_range);
+    /* Smooth flip, could be removed by pure algebraic solution */
+    if(perc>=1&&perc<=(1+d/2)) c.value = 1;
+    else if(perc>(1+d/2)||perc<0) c.value = 0;
+    else c.value = perc; 
+    c.draw(ctx,c);
+    c.onchange(c);
+  } 
+  var selectMove = function(c,e){
+    var t = vecAngle([c.x+c.width/2,c.y+c.height/2],[e.offsetX,e.offsetY])
+    t+=((Math.PI*2)/knob_range)/2;
+    var d = ((Math.PI*2+knob_start)/knob_range);
+    t = (t-knob_start+Math.PI*2)%(Math.PI*2);  
+    var perc = (t==0)?0:t/(knob_range);
+    /* Smooth flip, could be removed by pure algebraic solution */
+    if(perc>=1&&perc<=(1+d/2)) c.value = c.steps-1;
+    else if(perc>(1+d/2)||perc<0) c.value = 0;
+    else c.value = (perc)*(c.steps-1)<<0; 
+    c.draw(ctx,c);
+    c.onchange(c);
+  }     
+  
+  var sequencerDown = function(c,e){
+    var pos = calcSequencerPosition(c,e); 
+    var step = c.sequencer.getStep();
+    if(step[pos.index]===undefined){
+      step[pos.index]=c.sequencer.makeStep();
+      step[pos.index].note = pos.note;
+    }else if(step[pos.index].note==pos.note){
+      delete step[pos.index];
+    }else{
+      step[pos.index].note = pos.note;
+    }
+    c.draw(ctx,c);
+  }
+  var sequencerMove= function(c,e){
+    var pos = calcSequencerPosition(c,e); 
+    var step = c.sequencer.getStep();
+    if(step[pos.index]===undefined){
+      step[pos.index]=c.sequencer.makeStep();
+      step[pos.index].note = pos.note;  
+    }else{
+      step[pos.index].note = pos.note;
+    }
+    c.draw(ctx,c);
+  }
+  var sequencerWheel = function(c,e){
+    var pos = calcSequencerPosition(c,e); 
+    var dir = Math.max(-1, Math.min(1, (e.wheelDelta || -e.detail)))
+    var step = c.sequencer.getStep();
+    if(step[pos.index]!=undefined){
+      step[pos.index].velocity=
+        Math.min(1,Math.max(0,step[pos.index].velocity+dir*.1));
+    }
+    c.draw(ctx,c);
+  }
+  /* DRAW *********************************************************************/
+  var drawLabel = function(ctx,c){    
+    var x = c.x+c.width/2;
+    var y = c.y;
+    var text = c.name;
+    ctx.beginPath();
+    ctx.font = '9px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = "rgba(128,128,128,1)";
+    ctx.fillText(text, x, y);
+    ctx.fill();
+  }
+  var drawPan = function(ctx,c){
+    var x = c.x+c.width/2;
+    var y = c.y+c.height/2;
+    var value = c.value;
+    var r = knob_size/2;
+    ctx.clearRect(x-r,y-r,r*2,r*2);
+    ctx.beginPath();
+    var c = 0x55+(1-Math.abs(value))*0xaa<<0;
+    ctx.fillStyle = "rgba("+c+","+c+",0,1)";
+    ctx.moveTo(x, y);
+    ctx.arc(x, y, r, knob_start, knob_start+knob_range, false);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(x, y, r-3, 0, 2 * Math.PI, false);    
+    ctx.closePath();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.beginPath();
+    ctx.fillStyle = "rgba(0,0,0,1)";
+    ctx.arc(x, y, r-4, 0, 2 * Math.PI, false);
+    ctx.fill();
+    var t = knob_start + knob_range*((1+value)/2);
+    var p = rotate([x+8,y],[x,y],t);    
+    ctx.beginPath();
+    ctx.fillStyle = "rgba(128,128,128,1)";
+    ctx.arc(p[0], p[1], 2, 0, 2 * Math.PI, false);
+    ctx.fill();
+  }
+  var drawKnob = function(ctx,c){
+    var x = c.x+c.width/2;
+    var y = c.y+c.height/2;
+    var value = c.value;
+    var r = knob_size/2;
+    ctx.clearRect(x-r,y-r,r*2,r*2);
+    ctx.beginPath();
+    var c = 0x55+value*0xaa<<0;
+    ctx.fillStyle = "rgba("+c+","+c+",0,1)";
+    ctx.moveTo(x, y);
+    ctx.arc(x, y, r, knob_start, knob_start+knob_range, false);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(x, y, r-3, 0, 2 * Math.PI, false);    
+    ctx.closePath();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.beginPath();
+    ctx.fillStyle = "rgba(0,0,0,1)";
+    ctx.arc(x, y, r-4, 0, 2 * Math.PI, false);
+    ctx.fill();
+    var t = knob_start + knob_range*value;
+    var p = rotate([x+8,y],[x,y],t);    
+    ctx.beginPath();
+    ctx.fillStyle = "rgba(128,128,128,1)";
+    ctx.arc(p[0], p[1], 2, 0, 2 * Math.PI, false);
+    ctx.fill();
+  }
+  var drawSelect = function(ctx,c){
+    var x = c.x+c.width/2;
+    var y = c.y+c.height/2;
+    var value = c.value;
+    var steps = c.steps;
+    var angle_per_step =  knob_range/steps;
+    var r = knob_size/2;
+    var col;
+    ctx.clearRect(x-r,y-r,r*2,r*2);
+    for(var i=0; i<steps; i++){    
+      ctx.beginPath();
+      if(i==value) col=0xFF;
+      else col = 0x55;
+      ctx.fillStyle = "rgba("+col+","+col+",0,1)";
+      ctx.moveTo(x,y);
+      var sa = (knob_start+i*angle_per_step)%(Math.PI*2)+.1;
+      var ea = (sa+angle_per_step)%(Math.PI*2)-.1;
+      ctx.arc(x, y, r, sa,ea, false);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.beginPath();
+    ctx.arc(x, y, r-3, 0, 2 * Math.PI, false);    
+    ctx.closePath();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.beginPath();
+    ctx.fillStyle = "rgba(0,0,0,1)";
+    ctx.arc(x, y, r-4, 0, 2 * Math.PI, false);
+    ctx.fill();
+    var t = knob_start + knob_range*(value/steps)+angle_per_step/2;
+    var p = rotate([x+8,y],[x,y],t);    
+    ctx.beginPath();
+    ctx.fillStyle = "rgba(128,128,128,1)";
+    ctx.arc(p[0], p[1], 2, 0, 2 * Math.PI, false);
+    ctx.fill();
+  }
+  var drawSequencer = function(ctx,c){
+    var per_tick = c.width/(c.sequencer.getTicksPerBeat()*c.sequencer.getBeats())<<0;
+    var tick_error = (c.width%(c.sequencer.getTicksPerBeat()*c.sequencer.getBeats()))/2<<0
+    var per_note = c.height/c.sequencer.getNoteRange()<<0;
+    var note_error = (c.height%c.sequencer.getNoteRange())/2<<0;  
+    var per_beat = per_tick*c.sequencer.getTicksPerBeat();  
+    ctx.clearRect(c.x,c.y,c.width,c.height);
+    
+    var even = false;
+    for(var i=0, len = c.sequencer.getBeats();i<len;i++){      
+      ctx.beginPath();
+      if(even) ctx.fillStyle = "rgba(10,10,10,1)";
+      else ctx.fillStyle = "rgba(15,15,15,1)";  
+      var x = tick_error+per_beat*i;
+      ctx.fillRect(c.x+x,c.y,per_beat,c.height);
+      ctx.fill();
+      even=!even;
+    }
+    for(var i=0;i<c.sequencer.getStep().length;i++){  
+      if(c.sequencer.getStep()[i]===undefined)continue;
+      var x = tick_error+per_tick*i;    
+      var h = c.height-note_error
+      var y = (h-(c.sequencer.getStep()[i].note+1)*per_note)<<0;
+      ctx.beginPath();
+      var col = 0x55+c.sequencer.getStep()[i].velocity*0xaa<<0;
+      ctx.fillStyle = "rgba("+col+","+col+",0,1)";
+      ctx.fillRect(c.x+x,c.y+y,per_tick,per_note);
+      ctx.fill();
+    }
+    for(var i=0;i<c.sequencer.getNoteRange();i++){  
+      //var error = sequencer_cv.height%per_note;
+      var h = c.height-note_error
+      var y = (h-(i+1)*per_note)<<0;
+      ctx.beginPath();
+      var note = i%12
+      if(note==0){
+        ctx.fillStyle = "rgba(120,120,120,.3)";
+        ctx.fillRect(c.x,c.y+y,c.width,per_note);
+      }else if(note==3||note==5||note==7||note==9){    
+        ctx.fillStyle = "rgba(80,80,80,.3)";
+        ctx.fillRect(c.x,c.y+y,c.width,per_note);
+      }else{
+        ctx.fillStyle = "rgba(40,40,40,.3)";   
+        ctx.fillRect(c.x,c.y+y,c.width,per_note);
+      }
+      ctx.fill();
+    }
+    for(var i=0,len = c.sequencer.getBeats();i<len;i++){     
+      var x = tick_error+per_beat*i;   
+      for(var j=0;j<c.sequencer.getTicksPerBeat();j++){          
+        ctx.beginPath();
+        if(j==0)ctx.fillStyle = "rgba(0,0,0,1)";
+        else ctx.fillStyle = "rgba(0,0,0,.5)";
+        ctx.fillRect(c.x+x+per_tick*j,c.y,1,c.height);
+        ctx.fill();
+      }
+    }
+  }
+  /* UTILS ********************************************************************/
+  /**
+  * Rotate point around center
+  */
+  var rotate = function(p,cc,angle){
+    var x1 = p[0]-cc[0];
+    var y1 = p[1]-cc[1];
+    return [
+      cc[0]+(x1 * Math.cos(angle) - y1 * Math.sin(angle)),
+      cc[1]+(x1 * Math.sin(angle) + y1 * Math.cos(angle))
+    ]  
+  }   
+  /**
+  * angle between two points
+  */
+  var vecAngle = function(a,b){
+    var dx = b[0] - a[0];
+    var dy = b[1] - a[1];
+    return Math.atan2(dy,dx);
+  }
+})();
+</script> 
+
+
+</body></html>
